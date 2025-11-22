@@ -42,8 +42,11 @@ let ignoreOffer = false;
 // ---- утилиты UI ----
 function setDot(elem, status) {
   if (!elem) return;
-  elem.classList.remove('online', 'offline');
-  elem.classList.add(status === 'online' ? 'online' : 'offline');
+  const validStatuses = ['online', 'offline', 'connecting'];
+  elem.classList.remove(...validStatuses);
+  if (validStatuses.includes(status)) {
+    elem.classList.add(status);
+  }
 }
 
 function log(...args) {
