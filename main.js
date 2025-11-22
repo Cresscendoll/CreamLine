@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, desktopCapturer } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const path = require("path");
 
 let win;
@@ -20,7 +21,7 @@ function createWindow() {
     win.loadFile("index.html");
 }
 
-// --- IPC -----------------------
+// ---------- IPC ----------
 ipcMain.on("window-minimize", () => win?.minimize());
 ipcMain.on("window-maximize", () => {
     if (!win) return;
@@ -32,9 +33,43 @@ ipcMain.handle("get-sources", async () => {
     return await desktopCapturer.getSources({ types: ["screen"] });
 });
 
-// --- APP -----------------------
+// ---------- AUTOUPDATE ----------
+function setupAutoUpdater() {
+    autoUpdater.autoDownload = true;
+
+    autoUpdater.on("checking-for-update", () => {
+        console.log("🔍 Проверяю обновления...");
+    });
+
+    autoUpdater.on("update-available", () => {
+        console.log("⚡ Доступно новое обновление! Скачиваю...");
+    });
+
+    autoUpdater.on("update-not-available", () => {
+        console.log("✔ Обновлений нет.");
+    });
+
+    autoUpdater.on("error", (err) => {
+        console.log("❌ Ошибка автообновления:", err);
+    });
+
+    autoUpdater.on("download-progress", (p) => {
+        console.log(`📥 Загрузка: ${Math.floor(p.percent)}%`);
+    });
+
+    autoUpdater.on("update-downloaded", () => {
+        console.log("📦 Обновление скачано. Будет установлено при перезапуске.");
+        autoUpdater.quitAndInstall();
+    });
+
+    autoUpdater.checkForUpdatesAndNotify();
+}
+
+// ---------- APP ----------
 app.whenReady().then(() => {
     createWindow();
+    setupAutoUpdater();
+
     app.on("activate", () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
@@ -43,5 +78,3 @@ app.whenReady().then(() => {
 app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
 });
-
-

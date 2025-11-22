@@ -1,0 +1,29 @@
+appId: com.streamchik.app
+productName: Streamchik
+
+directories:
+  output: "dist"
+
+files:
+  - "!node_modules/"
+  - "!dist/"
+  - "!out/"
+  - "**/*"
+
+publish:
+  provider: github
+  owner: Cresscendoll
+  repo: Streamchik
+  releaseType: release   # создаётся GitHub Release автоматически
+
+win:
+  target:
+    - nsis
+  icon: icon.ico
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createStartMenuShortcut: true
+  shortcutName: "Streamchik"

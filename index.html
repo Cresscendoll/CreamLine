@@ -60,7 +60,7 @@
             border-radius: 50%;
             display: inline-block;
             margin-right: 8px;
-            background: red;
+            background: red; /* по умолчанию красный */
         }
 
         /* === Панель управления === */
@@ -231,12 +231,14 @@
     </div>
 
     <!-- Звук -->
-    <!-- self-monitor для "прослушать себя" -->
+    <!-- selfMonitor — для "прослушать себя" -->
     <audio id="selfMonitor" hidden autoplay></audio>
-    <!-- зарезервировано под будущее использование -->
+    <!-- пока про запас -->
     <video id="localAudio" hidden autoplay muted></video>
     <video id="remoteAudio" hidden autoplay></video>
 
     <script src="renderer.js"></script>
 </body>
 </html>
+
+

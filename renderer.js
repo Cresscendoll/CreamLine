@@ -1,370 +1,448 @@
-// ===============================
-//  STREAMCHIK — RENDERER
-// ===============================
+// streamchik 1.0.1 — renderer
+// WebRTC + WebSocket signalling, auto-room room-1,
+// индикаторы онлайна, пинг-понг, выбор устройств и прослушка себя.
 
-// --- DOM-элементы ---
-const btnStartScreen = document.getElementById("startScreen");
-const btnStopScreen  = document.getElementById("stopScreen");
+const SIGNALING_URL = 'ws://91.219.61.150:8080'; // поменяй при необходимости
+const ROOM_NAME = 'room-1';
 
-const btnMicOn  = document.getElementById("micOn");
-const btnMicOff = document.getElementById("micOff");
+// ---- DOM (заполним после DOMContentLoaded) ----
+let btnStartScreen;
+let btnStopScreen;
+let btnMicOn;
+let btnMicOff;
 
-const localVideo  = document.getElementById("localScreen");
-const remoteVideo = document.getElementById("remoteScreen");
+let meDot;
+let friendDot;
 
-const meDot     = document.getElementById("me-dot");
-const friendDot = document.getElementById("friend-dot");
+let localVideo;
+let remoteVideo;
+let remoteVolume;
 
-const fullscreenButtons = document.querySelectorAll(".fullscreen-btn");
+let selfListenCheckbox;
+let micSelect;
+let outSelect;
 
-// новое:
-const selfListenCheckbox = document.getElementById("selfListen");
-const micSelect          = document.getElementById("micSelect");
-const outSelect          = document.getElementById("outSelect");
-const selfMonitorAudio   = document.getElementById("selfMonitor");
+let fullscreenButtons;
 
-// --- медиапотоки ---
-let localScreenStream = null;
-let localAudioStream  = null;
+let localAudioEl;
+let remoteAudioEl;
 
-// выбранные устройства
-let currentMicId  = "";
-let currentOutId  = "";
-
-// --- WebRTC / signaling ---
-let pc = null;
+// ---- состояние ----
 let ws = null;
+let myId = null;
+let peersCount = 0;
 
-const SIGNALING_URL = "ws://91.219.61.150:8080";
-const ICE_CONFIG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+let pc = null;
+let localScreenStream = null;
+let localMicStream = null;
 
+let makingOffer = false;
+let ignoreOffer = false;
 
-// ===============================
-//  ПОЛНОЭКРАННЫЙ РЕЖИМ
-// ===============================
-fullscreenButtons.forEach(btn => {
-    btn.addEventListener("click", () => {
-        const targetId = btn.dataset.target;
-        const video = document.getElementById(targetId);
-        if (!video) return;
+// ---- утилиты UI ----
+function setDot(elem, status) {
+  if (!elem) return;
+  elem.classList.remove('online', 'offline');
+  elem.classList.add(status === 'online' ? 'online' : 'offline');
+}
 
-        if (!document.fullscreenElement) {
-            video.requestFullscreen().catch(err => console.error("FS error:", err));
-        } else {
-            document.exitFullscreen().catch(err => console.error("Exit FS error:", err));
-        }
-    });
-});
+function log(...args) {
+  console.log('[streamchik]', ...args);
+}
 
+function safeSend(obj) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify(obj));
+}
 
-// ===============================
-//  УСТРОЙСТВА ВВОДА/ВЫВОДА
-// ===============================
-async function refreshDevices() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-        console.warn("enumerateDevices не поддерживается");
-        return;
-    }
+// ---- WebSocket ----
+function setupWebSocket() {
+  ws = new WebSocket(SIGNALING_URL);
 
+  ws.onopen = () => {
+    log('WS open');
+    setDot(meDot, 'online');
+    // Авто-join в room-1
+    safeSend({ type: 'join', room: ROOM_NAME });
+  };
+
+  ws.onmessage = async (event) => {
+    let msg;
     try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-
-        const inputs  = devices.filter(d => d.kind === "audioinput");
-        const outputs = devices.filter(d => d.kind === "audiooutput");
-
-        // МИКРОФОНЫ
-        micSelect.innerHTML = "";
-        const defIn = document.createElement("option");
-        defIn.value = "";
-        defIn.textContent = "Системный по умолчанию";
-        micSelect.appendChild(defIn);
-
-        inputs.forEach((d, idx) => {
-            const opt = document.createElement("option");
-            opt.value = d.deviceId;
-            opt.textContent = d.label || `Микрофон ${idx + 1}`;
-            if (d.deviceId === currentMicId) opt.selected = true;
-            micSelect.appendChild(opt);
-        });
-
-        // ВЫВОД
-        outSelect.innerHTML = "";
-        const defOut = document.createElement("option");
-        defOut.value = "";
-        defOut.textContent = "Системный по умолчанию";
-        outSelect.appendChild(defOut);
-
-        outputs.forEach((d, idx) => {
-            const opt = document.createElement("option");
-            opt.value = d.deviceId;
-            opt.textContent = d.label || `Устройство ${idx + 1}`;
-            if (d.deviceId === currentOutId) opt.selected = true;
-            outSelect.appendChild(opt);
-        });
-
-    } catch (err) {
-        console.error("Ошибка enumerateDevices:", err);
-    }
-}
-
-micSelect.addEventListener("change", () => {
-    currentMicId = micSelect.value;
-});
-
-outSelect.addEventListener("change", () => {
-    currentOutId = outSelect.value;
-    applyOutputDevice();
-});
-
-if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
-    navigator.mediaDevices.addEventListener("devicechange", refreshDevices);
-}
-
-refreshDevices();
-
-
-// ===============================
-//  Применить устройство вывода
-// ===============================
-async function applyOutputDevice() {
-    if (!("setSinkId" in HTMLMediaElement.prototype)) {
-        console.warn("setSinkId не поддерживается этим движком");
-        return;
+      msg = JSON.parse(event.data);
+    } catch (e) {
+      log('Bad WS message', event.data);
+      return;
     }
 
-    const targetElements = [selfMonitorAudio, remoteVideo];
+    switch (msg.type) {
+      case 'welcome':
+        myId = msg.id;
+        log('Welcome, id=', myId, 'room=', msg.room);
+        break;
 
-    for (const el of targetElements) {
-        if (!el) continue;
-        try {
-            if (currentOutId) {
-                await el.setSinkId(currentOutId);
-            } else {
-                await el.setSinkId(""); // дефолт
-            }
-        } catch (err) {
-            console.error("Ошибка setSinkId:", err);
-        }
+      case 'peers':
+        peersCount = msg.count || 0;
+        log('Peers in room:', peersCount, msg.ids);
+        // если в комнате больше 1 человека — друг считается онлайн
+        setDot(friendDot, peersCount > 1 ? 'online' : 'offline');
+        break;
+
+      case 'ping':
+        safeSend({ type: 'pong', ts: msg.ts });
+        break;
+
+      case 'offer':
+        await handleOffer(msg);
+        break;
+
+      case 'answer':
+        await handleAnswer(msg);
+        break;
+
+      case 'ice':
+        await handleRemoteIce(msg);
+        break;
+
+      case 'state':
+        // На будущее — можно обновлять UI, пока просто логируем
+        log('Remote state:', msg);
+        break;
+
+      default:
+        log('Unknown WS message', msg);
     }
+  };
+
+  ws.onclose = () => {
+    log('WS closed');
+    setDot(meDot, 'offline');
+    setDot(friendDot, 'offline');
+    // попробуем переподключиться
+    setTimeout(setupWebSocket, 3000);
+  };
+
+  ws.onerror = (err) => {
+    console.error('WS error', err);
+  };
 }
 
-
-// ===============================
-//  WEBRTC + SIGNALING
-// ===============================
+// ---- WebRTC ----
 function ensurePeerConnection() {
-    if (pc) return;
-    pc = new RTCPeerConnection(ICE_CONFIG);
+  if (pc) return;
 
-    pc.onicecandidate = (e) => {
-        if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "ice", candidate: e.candidate }));
-        }
-    };
+  pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  });
 
-    pc.onconnectionstatechange = () => {
-        console.log("Peer state:", pc.connectionState);
-        if (pc.connectionState === "connected") {
-            friendDot.style.background = "#00ff66"; // зелёный
-        } else if (pc.connectionState === "connecting") {
-            friendDot.style.background = "orange";
-        } else {
-            friendDot.style.background = "red";
-        }
-    };
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      safeSend({ type: 'ice', candidate: event.candidate, room: ROOM_NAME });
+    }
+  };
 
-    pc.ontrack = (event) => {
-        console.log("Получен трек от друга");
-        remoteVideo.srcObject = event.streams[0];
-    };
-}
+  pc.ontrack = (event) => {
+    const stream = event.streams[0];
+    if (!stream) return;
 
-function connectSignaling() {
+    if (remoteVideo) remoteVideo.srcObject = stream;
+    if (remoteAudioEl) remoteAudioEl.srcObject = stream;
+    log('Got remote track');
+  };
+
+  pc.onconnectionstatechange = () => {
+    log('connection state:', pc.connectionState);
+  };
+
+  pc.onnegotiationneeded = async () => {
     try {
-        ws = new WebSocket(SIGNALING_URL);
-
-        ws.onopen = () => {
-            console.log("WS: соединение установлено");
-            meDot.style.background = "#00ff66"; // зелёный — сервер доступен
-        };
-
-        ws.onerror = (e) => {
-            console.warn("WS: ошибка", e);
-            meDot.style.background = "orange";
-        };
-
-        ws.onclose = () => {
-            console.warn("WS: соединение закрыто");
-            meDot.style.background = "red";
-            setTimeout(connectSignaling, 3000);
-        };
-
-        ws.onmessage = async (msg) => {
-            const data = JSON.parse(msg.data);
-
-            if (data.type === "offer") {
-                await handleOffer(data.offer);
-            } else if (data.type === "answer" && pc) {
-                await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-            } else if (data.type === "ice" && pc && data.candidate) {
-                await pc.addIceCandidate(data.candidate);
-            }
-        };
-    } catch (err) {
-        console.error("Ошибка подключения WS:", err);
-        meDot.style.background = "red";
+      makingOffer = true;
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      safeSend({ type: 'offer', sdp: pc.localDescription, room: ROOM_NAME });
+    } catch (e) {
+      console.error('onnegotiationneeded error', e);
+    } finally {
+      makingOffer = false;
     }
+  };
 }
 
-connectSignaling();
+async function handleOffer(msg) {
+  ensurePeerConnection();
 
+  const offerCollision =
+    makingOffer || (pc.signalingState !== 'stable');
 
-// ===============================
-//  СТРИМ ЭКРАНА
-// ===============================
-btnStartScreen.addEventListener("click", startScreenShare);
-btnStopScreen.addEventListener("click", stopScreenShare);
+  ignoreOffer = !offerCollision && msg.polite === false;
 
-async function startScreenShare() {
-    console.log("→ Запуск стрима экрана...");
-    try {
-        const sources = await window.electronAPI.getSources();
-        console.log("Источники экрана:", sources);
+  if (ignoreOffer) {
+    log('Ignoring offer (collision)');
+    return;
+  }
 
-        if (!sources || sources.length === 0) {
-            throw new Error("Не найдено ни одного экрана");
-        }
-
-        const screenId = sources[0].id;
-
-        const stream = await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: {
-                mandatory: {
-                    chromeMediaSource: "desktop",
-                    chromeMediaSourceId: screenId
-                }
-            }
-        });
-
-        localScreenStream = stream;
-        localVideo.srcObject = stream;
-
-        ensurePeerConnection();
-
-        localScreenStream.getTracks().forEach(track => {
-            pc.addTrack(track, localScreenStream);
-        });
-
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            ws.send(JSON.stringify({ type: "offer", offer }));
-        }
-
-        btnStartScreen.disabled = true;
-        btnStopScreen.disabled  = false;
-
-        console.log("✔ Стрим экрана запущен");
-
-    } catch (err) {
-        console.error("Ошибка при запуске стрима:", err);
-
-        if (!localScreenStream) {
-            alert("Не удалось запустить стрим. Подробности — в консоли.");
-        }
-    }
-}
-
-function stopScreenShare() {
-    console.log("→ Остановка стрима экрана...");
-    if (localScreenStream) {
-        localScreenStream.getTracks().forEach(t => t.stop());
-        localScreenStream = null;
-    }
-    localVideo.srcObject = null;
-
-    btnStartScreen.disabled = false;
-    btnStopScreen.disabled  = true;
-
-    console.log("✔ Стрим экрана остановлен");
-}
-
-
-// ===============================
-//  ОБРАБОТКА OFFER
-// ===============================
-async function handleOffer(offer) {
-    console.log("← Получен offer");
-    ensurePeerConnection();
-
-    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+  try {
+    await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "answer", answer }));
-    }
+    safeSend({ type: 'answer', sdp: pc.localDescription, room: ROOM_NAME });
+  } catch (e) {
+    console.error('handleOffer error', e);
+  }
 }
 
-
-// ===============================
-//  МИКРОФОН + ПРОСЛУШКА
-// ===============================
-btnMicOn.addEventListener("click", enableMic);
-btnMicOff.addEventListener("click", disableMic);
-selfListenCheckbox.addEventListener("change", updateSelfMonitor);
-
-async function enableMic() {
-    try {
-        const audioConstraint = currentMicId
-            ? { deviceId: { exact: currentMicId } }
-            : true;
-
-        const stream = await navigator.mediaDevices.getUserMedia({
-            audio: audioConstraint,
-            video: false
-        });
-
-        localAudioStream = stream;
-
-        if (pc) {
-            localAudioStream.getTracks().forEach(track => {
-                pc.addTrack(track, localAudioStream);
-            });
-        }
-
-        btnMicOn.disabled  = true;
-        btnMicOff.disabled = false;
-        console.log("✔ Микрофон включён");
-
-        updateSelfMonitor();
-
-    } catch (err) {
-        console.error("Ошибка включения микрофона:", err);
-        alert("Не удалось включить микрофон");
-    }
+async function handleAnswer(msg) {
+  if (!pc) return;
+  try {
+    await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+  } catch (e) {
+    console.error('handleAnswer error', e);
+  }
 }
 
-function disableMic() {
-    if (localAudioStream) {
-        localAudioStream.getTracks().forEach(t => t.stop());
-        localAudioStream = null;
-    }
-    btnMicOn.disabled  = false;
-    btnMicOff.disabled = true;
-    console.log("✔ Микрофон выключен");
-
-    updateSelfMonitor();
+async function handleRemoteIce(msg) {
+  if (!pc || !msg.candidate) return;
+  try {
+    await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+  } catch (e) {
+    console.error('addIceCandidate error', e);
+  }
 }
 
-function updateSelfMonitor() {
-    if (!selfListenCheckbox.checked || !localAudioStream) {
-        selfMonitorAudio.srcObject = null;
-        return;
+// ---- медиа ----
+async function startMic() {
+  try {
+    const constraints = {
+      audio: {
+        deviceId: micSelect && micSelect.value && micSelect.value !== 'default'
+          ? { exact: micSelect.value }
+          : undefined,
+      },
+      video: false,
+    };
+
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    localMicStream = stream;
+    if (localAudioEl) {
+      localAudioEl.srcObject = stream;
+      localAudioEl.muted = !(selfListenCheckbox && selfListenCheckbox.checked);
     }
 
-    selfMonitorAudio.srcObject = localAudioStream;
-    selfMonitorAudio.muted = false;
-    applyOutputDevice(); // чтобы учесть выбранное устройство вывода
+    ensurePeerConnection();
+    for (const track of stream.getAudioTracks()) {
+      pc.addTrack(track, stream);
+    }
+
+    if (btnMicOn) btnMicOn.disabled = true;
+    if (btnMicOff) btnMicOff.disabled = false;
+  } catch (e) {
+    console.error('startMic error', e);
+    alert('Не удалось включить микрофон');
+  }
 }
+
+function stopMic() {
+  if (localMicStream) {
+    localMicStream.getTracks().forEach(t => t.stop());
+    localMicStream = null;
+  }
+  if (pc) {
+    pc.getSenders()
+      .filter(s => s.track && s.track.kind === 'audio')
+      .forEach(s => pc.removeTrack(s));
+  }
+  if (localAudioEl) localAudioEl.srcObject = null;
+  if (btnMicOn) btnMicOn.disabled = false;
+  if (btnMicOff) btnMicOff.disabled = true;
+}
+
+async function startScreen() {
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: 60 },
+      audio: true,
+    });
+
+    localScreenStream = stream;
+    if (localVideo) localVideo.srcObject = stream;
+
+    ensurePeerConnection();
+    for (const track of stream.getTracks()) {
+      pc.addTrack(track, stream);
+    }
+
+    if (btnStartScreen) btnStartScreen.disabled = true;
+    if (btnStopScreen) btnStopScreen.disabled = false;
+
+    safeSend({ type: 'state', screen: 'on', room: ROOM_NAME });
+  } catch (e) {
+    console.error('startScreen error', e);
+    alert('Ошибка при запуске стрима');
+  }
+}
+
+function stopScreen() {
+  if (localScreenStream) {
+    localScreenStream.getTracks().forEach(t => t.stop());
+    localScreenStream = null;
+  }
+
+  if (pc) {
+    pc.getSenders()
+      .filter(s => s.track && s.track.kind === 'video')
+      .forEach(s => pc.removeTrack(s));
+  }
+
+  if (localVideo) localVideo.srcObject = null;
+
+  if (btnStartScreen) btnStartScreen.disabled = false;
+  if (btnStopScreen) btnStopScreen.disabled = true;
+
+  safeSend({ type: 'state', screen: 'off', room: ROOM_NAME });
+}
+
+// ---- устройства ввода / вывода ----
+async function populateDevices() {
+  if (!micSelect || !outSelect) return;
+
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+
+    micSelect.innerHTML = '';
+    outSelect.innerHTML = '';
+
+    const defaultMicOption = document.createElement('option');
+    defaultMicOption.value = 'default';
+    defaultMicOption.textContent = 'Системный по умолчанию';
+    micSelect.appendChild(defaultMicOption);
+
+    const defaultOutOption = document.createElement('option');
+    defaultOutOption.value = 'default';
+    defaultOutOption.textContent = 'Системный по умолчанию';
+    outSelect.appendChild(defaultOutOption);
+
+    devices.forEach((d) => {
+      const option = document.createElement('option');
+      option.value = d.deviceId;
+      option.textContent = d.label || `${d.kind} (${d.deviceId.slice(0, 4)}...)`;
+
+      if (d.kind === 'audioinput') {
+        micSelect.appendChild(option);
+      } else if (d.kind === 'audiooutput') {
+        outSelect.appendChild(option);
+      }
+    });
+  } catch (e) {
+    console.error('enumerateDevices error', e);
+  }
+}
+
+async function applyOutputDevice() {
+  if (!remoteAudioEl || !localAudioEl) return;
+  if (!('setSinkId' in HTMLMediaElement.prototype)) {
+    console.warn('setSinkId не поддерживается');
+    return;
+  }
+  const deviceId = outSelect ? outSelect.value : 'default';
+  try {
+    if (deviceId && deviceId !== 'default') {
+      await remoteAudioEl.setSinkId(deviceId);
+      await localAudioEl.setSinkId(deviceId);
+    } else {
+      await remoteAudioEl.setSinkId('');
+      await localAudioEl.setSinkId('');
+    }
+  } catch (e) {
+    console.error('setSinkId error', e);
+  }
+}
+
+// ---- fullscreen ----
+function setupFullscreenButtons() {
+  if (!fullscreenButtons) return;
+  fullscreenButtons.forEach((btn) => {
+    const targetId = btn.dataset.target;
+    const videoEl = document.getElementById(targetId);
+    if (!videoEl) return;
+
+    btn.addEventListener('click', () => {
+      if (videoEl.requestFullscreen) {
+        videoEl.requestFullscreen();
+      }
+    });
+  });
+}
+
+// ---- громкость удалённого экрана ----
+function setupRemoteVolume() {
+  if (!remoteVolume || !remoteAudioEl) return;
+  remoteVolume.addEventListener('input', () => {
+    const value = Number(remoteVolume.value || 0);
+    remoteAudioEl.volume = value / 100;
+  });
+}
+
+// ---- прослушать себя ----
+function setupSelfListen() {
+  if (!selfListenCheckbox || !localAudioEl) return;
+  selfListenCheckbox.addEventListener('change', () => {
+    localAudioEl.muted = !selfListenCheckbox.checked;
+  });
+}
+
+// ---- старт приложения ----
+window.addEventListener('DOMContentLoaded', async () => {
+  // заполняем ссылки на DOM
+  btnStartScreen = document.getElementById('startScreen');
+  btnStopScreen  = document.getElementById('stopScreen');
+  btnMicOn       = document.getElementById('micOn');
+  btnMicOff      = document.getElementById('micOff');
+
+  meDot          = document.getElementById('me-dot');
+  friendDot      = document.getElementById('friend-dot');
+
+  localVideo     = document.getElementById('localScreen');
+  remoteVideo    = document.getElementById('remoteScreen');
+  remoteVolume   = document.getElementById('remoteScreenVolume');
+
+  selfListenCheckbox = document.getElementById('selfListen');
+  micSelect      = document.getElementById('micSelect');
+  outSelect      = document.getElementById('outSelect');
+
+  fullscreenButtons = document.querySelectorAll('.fullscreen-btn');
+
+  localAudioEl   = document.getElementById('localAudio');
+  remoteAudioEl  = document.getElementById('remoteAudio');
+
+  setDot(meDot, 'offline');
+  setDot(friendDot, 'offline');
+
+  if (btnMicOff) btnMicOff.disabled = true;
+  if (btnStopScreen) btnStopScreen.disabled = true;
+
+  if (btnMicOn) btnMicOn.addEventListener('click', startMic);
+  if (btnMicOff) btnMicOff.addEventListener('click', stopMic);
+  if (btnStartScreen) btnStartScreen.addEventListener('click', startScreen);
+  if (btnStopScreen) btnStopScreen.addEventListener('click', stopScreen);
+
+  if (micSelect) {
+    micSelect.addEventListener('change', () => {
+      if (localMicStream) {
+        stopMic();
+        startMic();
+      }
+    });
+  }
+
+  if (outSelect) {
+    outSelect.addEventListener('change', () => {
+      applyOutputDevice();
+    });
+  }
+
+  await populateDevices();
+  setupFullscreenButtons();
+  setupRemoteVolume();
+  setupSelfListen();
+  setupWebSocket();
+});
