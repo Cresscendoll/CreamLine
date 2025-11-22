@@ -49,6 +49,22 @@ function setDot(elem, status) {
   }
 }
 
+function updateFriendDotFromPC() {
+  if (!pc) return;
+  switch (pc.connectionState) {
+    case 'connected':
+      setDot(friendDot, 'online');
+      break;
+    case 'connecting':
+    case 'checking':
+    case 'new':
+      setDot(friendDot, 'connecting');
+      break;
+    default:
+      setDot(friendDot, 'offline');
+  }
+}
+
 function log(...args) {
   console.log('[streamchik]', ...args);
 }
@@ -60,6 +76,7 @@ function safeSend(obj) {
 
 // ---- WebSocket ----
 function setupWebSocket() {
+  setDot(meDot, 'connecting');
   ws = new WebSocket(SIGNALING_URL);
 
   ws.onopen = () => {
@@ -88,7 +105,15 @@ function setupWebSocket() {
         peersCount = msg.count || 0;
         log('Peers in room:', peersCount, msg.ids);
         // если в комнате больше 1 человека — друг считается онлайн
-        setDot(friendDot, peersCount > 1 ? 'online' : 'offline');
+        if (peersCount > 1) {
+          if (pc && pc.connectionState === 'connected') {
+            setDot(friendDot, 'online');
+          } else {
+            setDot(friendDot, 'connecting');
+          }
+        } else {
+          setDot(friendDot, 'offline');
+        }
         break;
 
       case 'ping':
@@ -155,11 +180,13 @@ function ensurePeerConnection() {
 
   pc.onconnectionstatechange = () => {
     log('connection state:', pc.connectionState);
+    updateFriendDotFromPC();
   };
 
   pc.onnegotiationneeded = async () => {
     try {
       makingOffer = true;
+      setDot(friendDot, 'connecting');
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       safeSend({ type: 'offer', sdp: pc.localDescription, room: ROOM_NAME });
@@ -186,6 +213,7 @@ async function handleOffer(msg) {
 
   try {
     await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+    setDot(friendDot, 'connecting');
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     safeSend({ type: 'answer', sdp: pc.localDescription, room: ROOM_NAME });
@@ -198,6 +226,7 @@ async function handleAnswer(msg) {
   if (!pc) return;
   try {
     await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+    setDot(friendDot, 'connecting');
   } catch (e) {
     console.error('handleAnswer error', e);
   }
