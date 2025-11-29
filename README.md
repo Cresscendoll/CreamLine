@@ -1,6 +1,6 @@
 # CreamLine
 
-![CreamLine Architecture](assets/architecture_diagram.png)
+![CreamLine](build/name.png)
 
 **CreamLine** is a modern Electron-based screen sharing and streaming application utilizing WebRTC for low-latency, real-time peer-to-peer communication.
 
