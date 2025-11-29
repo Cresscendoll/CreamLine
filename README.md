@@ -2,6 +2,33 @@
 
 **CreamLine** is an Electron-based screen sharing and streaming application utilizing WebRTC for real-time peer-to-peer communication. Version 1.0.5.
 
+## Architecture Diagram
+
+```mermaid
+graph TD
+    subgraph Electron App
+        Main[main.js (Main Process)]
+        Renderer[renderer.js (Renderer Process)]
+        UI[index.html (UI)]
+        Config[config.js]
+        
+        Main -->|Creates| Renderer
+        Renderer -->|Loads| UI
+        Main -->|Reads| Config
+    end
+
+    subgraph Signaling
+        SigServer[server.js / signaling-server.js]
+        RemoteClient[Remote Peer]
+    end
+
+    Renderer -->|WebSocket| SigServer
+    RemoteClient -->|WebSocket| SigServer
+    Renderer <-->|WebRTC Media/Data| RemoteClient
+    
+    Main -->|Optional Local Start| SigServer
+```
+
 ## Features
 
 - **Screen Sharing**: Stream your screen to other connected clients.
@@ -39,8 +66,6 @@ To start the application in development mode:
 npm start
 ```
 
-This command runs `electron .`.
-
 ### Building
 
 To build the application for Windows (creates an installer):
@@ -48,8 +73,6 @@ To build the application for Windows (creates an installer):
 ```bash
 npm run dist
 ```
-
-This uses `electron-builder` to package the app.
 
 ### Running Signaling Server
 
