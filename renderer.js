@@ -2,7 +2,7 @@
 // WebRTC + WebSocket signalling, auto-room room-1,
 // индикаторы онлайна, пинг-понг, выбор устройств и прослушка себя.
 
-const SIGNALING_URL = (window.electronAPI && window.electronAPI.signalingUrl) || 'ws://91.219.61.150:8080'; // поменяй при необходимости
+const SIGNALING_URL = (window.electronAPI && window.electronAPI.signalingUrl) || 'ws://185.181.165.175:8080'; // поменяй при необходимости
 const ROOM_NAME = (window.electronAPI && window.electronAPI.roomName) || 'room-1';
 
 // ---- DOM (заполним после DOMContentLoaded) ----

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ru">
+
 <head>
     <meta charset="UTF-8">
     <title>CreamLine v1.0.5</title>
@@ -110,7 +111,8 @@
             border-radius: 50%;
             display: inline-block;
             margin-right: 8px;
-            background: #444; /* базовый цвет */
+            background: #444;
+            /* базовый цвет */
         }
 
         .status-dot.online {
@@ -228,19 +230,25 @@
     <div id="container">
 
         <div id="page-head">
-            <h1>CreamLine v1.0.5</h1>
+            <h1 style="display: flex; align-items: center; gap: 10px;">
+                <img src="build/name.png" alt="CreamLine" style="height: 80px; width: auto;">
+                v1.0.5
+            </h1>
             <button id="checkUpdates">Проверить обновления</button>
         </div>
 
-        <div id="connection-log"></div>
+        <!-- Flex container for Logs and Users -->
+        <div style="display: flex; gap: 16px; align-items: flex-start; margin-bottom: 16px;">
+            <div id="connection-log" style="flex: 1; margin-top: 0;"></div>
 
-        <!-- Участники -->
-        <div id="users">
-            <h3>Участники:</h3>
-            <ul>
-                <li><span id="me-dot" class="status-dot"></span>Участник №1 (Вы)</li>
-                <li><span id="friend-dot" class="status-dot"></span>Участник №2</li>
-            </ul>
+            <!-- Участники -->
+            <div id="users" style="margin-bottom: 0;">
+                <h3>Участники:</h3>
+                <ul>
+                    <li><span id="me-dot" class="status-dot"></span>Участник №1 (Вы)</li>
+                    <li><span id="friend-dot" class="status-dot"></span>Участник №2</li>
+                </ul>
+            </div>
         </div>
 
         <!-- Панель управления -->
@@ -304,6 +312,5 @@
 
     <script src="renderer.js"></script>
 </body>
+
 </html>
-
-

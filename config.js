@@ -1,4 +1,4 @@
-const DEFAULT_SIGNALING_URL = 'ws://91.219.61.150:8080';
+const DEFAULT_SIGNALING_URL = 'ws://185.181.165.175:8080';
 const DEFAULT_ROOM_NAME = 'room-1';
 
 module.exports = {

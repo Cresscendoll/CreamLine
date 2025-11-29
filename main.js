@@ -20,7 +20,7 @@ function createWindow() {
         frame: false,
         titleBarStyle: "hidden",
         title: "CreamLine v1.0.5",
-        icon: "build/icon.png",
+        icon: "build/icon.ico",
         backgroundColor: "#111",
         webPreferences: {
             preload: path.join(__dirname, "preload.js"),

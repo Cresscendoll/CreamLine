@@ -12,7 +12,8 @@
     "appId": "com.creamline.app",
     "productName": "CreamLine",
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "build"
     },
     "publish": [],
     "win": {

@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
-let signalingUrl = process.env.SIGNALING_URL || "ws://91.219.61.150:8080";
+let signalingUrl = process.env.SIGNALING_URL || "ws://185.181.165.175:8080";
 let roomName = process.env.SIGNALING_ROOM || "room-1";
 
 try {
@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     // управляющие кнопки окна
     minimize: () => ipcRenderer.send("window-minimize"),
     maximize: () => ipcRenderer.send("window-maximize"),
-    close:    () => ipcRenderer.send("window-close"),
+    close: () => ipcRenderer.send("window-close"),
 
     // доступ к desktopCapturer и автообновлению
     getSources: () => ipcRenderer.invoke("get-sources"),
