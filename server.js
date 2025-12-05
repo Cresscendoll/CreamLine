@@ -1,4 +1,4 @@
-// CreamLine 1.0.9 - signalling server
+// CreamLine 1.1.7 - signalling server
 // Авто-комната room-1, пинг-понг, логирование подключений
 
 const WebSocket = require('ws');
@@ -119,7 +119,8 @@ wss.on('connection', (ws, req) => {
       case 'offer':
       case 'answer':
       case 'ice':
-      case 'state': {
+      case 'state':
+      case 'please_offer': {
         // пересылаем всем, кроме отправителя, внутри его комнаты
         const payload = {
           ...msg,

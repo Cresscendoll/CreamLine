@@ -1,4 +1,4 @@
-// CreamLine 1.0.9 - renderer
+// CreamLine 1.1.7 - renderer
 // WebRTC + WebSocket signalling, auto-room room-1,
 // индикаторы онлайна, пинг-понг, выбор устройств и прослушка себя.
 
@@ -42,6 +42,7 @@ let localMicStream = null;
 
 let makingOffer = false;
 let ignoreOffer = false;
+let remoteId = null; // ID другого пира для определения politeness
 
 // ---- утилиты UI ----
 function setDot(elem, status) {
@@ -85,12 +86,7 @@ function safeSend(obj) {
   ws.send(JSON.stringify(obj));
 }
 
-function sendPendingOffer() {
-  if (!pc || !pc.localDescription) return;
-  if (pc.localDescription.type !== 'offer') return;
-  if (pc.signalingState !== 'have-local-offer') return;
-  safeSend({ type: 'offer', sdp: pc.localDescription, room: ROOM_NAME });
-}
+// sendPendingOffer удалён - он вызывался до установления signaling и ломал negotiation
 
 // ---- WebSocket ----
 function setupWebSocket() {
@@ -98,12 +94,20 @@ function setupWebSocket() {
   appendLog(`Подключаемся к ${SIGNALING_URL}, комната ${ROOM_NAME}`);
   ws = new WebSocket(SIGNALING_URL);
 
-  ws.onopen = () => {
+  ws.onopen = async () => {
     appendLog(`WS open: ${SIGNALING_URL}, room=${ROOM_NAME}`);
     setDot(meDot, 'online');
-    // Авто-join в room-1
+
+    // 1. Создаём PeerConnection сразу при подключении
+    ensurePeerConnection();
+
+    // 2. Присоединяемся к комнате
     safeSend({ type: 'join', room: ROOM_NAME });
-    sendPendingOffer();
+
+    // 3. Запускаем микрофон ПОСЛЕ установления соединения
+    await startMic();
+
+    appendLog('WebRTC готов к работе');
   };
 
   ws.onmessage = async (event) => {
@@ -125,15 +129,30 @@ function setupWebSocket() {
         {
           const prevCount = peersCount;
           peersCount = msg.count || 0;
+
+          // Обновляем remoteId
+          if (msg.ids && Array.isArray(msg.ids)) {
+            const others = msg.ids.filter(id => id !== myId);
+            if (others.length > 0) {
+              remoteId = others[0];
+              log('Remote peer ID:', remoteId);
+            }
+          }
+
           appendLog(`Peers in room: ${peersCount} (${(msg.ids || []).join(', ')})`);
           if (prevCount !== 0 && peersCount > prevCount) {
             appendLog('Кто-то подключился');
           } else if (prevCount !== 0 && peersCount < prevCount) {
             appendLog('Кто-то отключился');
+            if (peersCount <= 1) remoteId = null;
           }
         }
         // зеленый если в комнате есть второй участник, иначе красный
         setDot(friendDot, peersCount > 1 ? 'online' : 'offline');
+
+        // Если мы impolite и у нас есть треки, но нет соединения - 
+        // мы не можем создать оффер сами. В идеале Polite должен инициировать.
+        // Но пока следуем строгому правилу: Impolite молчит.
         break;
 
       case 'ping':
@@ -153,8 +172,38 @@ function setupWebSocket() {
         break;
 
       case 'state':
+        // Сначала проверяем, не является ли это просьбой об оффере (туннелирование)
+        if (msg.subtype === 'please_offer') {
+          // Другой пир (Impolite) просит нас (Polite) создать офер.
+          if (remoteId && (myId < remoteId)) {
+            log('Received please_offer (via state), checking transceivers and negotiating...');
+
+            if (pc) {
+              const transceivers = pc.getTransceivers();
+              const hasAudio = transceivers.some(t => t.receiver.track.kind === 'audio');
+              const hasVideo = transceivers.some(t => t.receiver.track.kind === 'video');
+
+              if (!hasAudio) {
+                log('Adding audio transceiver (recvonly)');
+                pc.addTransceiver('audio', { direction: 'recvonly' });
+              }
+              if (!hasVideo) {
+                log('Adding video transceiver (recvonly)');
+                pc.addTransceiver('video', { direction: 'recvonly' });
+              }
+            }
+
+            await createOfferIfNeeded(true); // true = force
+          }
+          break;
+        }
+
+        // Обычная обработка состояния (экран и т.д.)
         handleRemoteState(msg);
         break;
+
+      // case 'please_offer':  <- Убрали, так как используем state-туннель для совместимости со старым сервером
+      //   break;
 
       default:
         log('Unknown WS message', msg);
@@ -181,7 +230,21 @@ function ensurePeerConnection() {
 
   remoteMediaStream = new MediaStream();
   pc = new RTCPeerConnection({
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      // UDP (основной, быстрый)
+      {
+        urls: 'turn:185.181.165.175:3478',
+        username: 'user',
+        credential: 'pass'
+      },
+      // TCP (запасной, для обхода блокировок провайдеров)
+      {
+        urls: 'turn:185.181.165.175:3478?transport=tcp',
+        username: 'user',
+        credential: 'pass'
+      }
+    ],
   });
 
   pc.onicecandidate = (event) => {
@@ -191,22 +254,34 @@ function ensurePeerConnection() {
   };
 
   pc.ontrack = (event) => {
+    const track = event.track;
     const stream = event.streams[0];
     if (!stream) return;
 
-    log('Got remote track:', event.track.kind, 'Stream id:', stream.id);
+    log('Got remote track:', track.kind, 'Stream id:', stream.id);
 
-    // Если в стриме есть видео-трек — это экран (даже если там есть и аудио)
-    if (stream.getVideoTracks().length > 0) {
+    if (track.kind === 'video') {
+      // Video track = screen stream
       if (remoteVideo && remoteVideo.srcObject !== stream) {
         remoteVideo.srcObject = stream;
-        log('Assigned to remoteVideo');
+        log('Assigned screen stream to remoteVideo');
       }
-    } else {
-      // Иначе считаем, что это микрофон (аудио-онли)
-      if (remoteAudioEl && remoteAudioEl.srcObject !== stream) {
-        remoteAudioEl.srcObject = stream;
-        log('Assigned to remoteAudioEl');
+    } else if (track.kind === 'audio') {
+      // Check if this stream already has video (screen) or is audio-only (mic)
+      const streamHasVideo = stream.getVideoTracks().length > 0;
+
+      if (streamHasVideo) {
+        // Screen audio - assign to remoteVideo
+        if (remoteVideo && remoteVideo.srcObject !== stream) {
+          remoteVideo.srcObject = stream;
+          log('Assigned screen stream (with audio) to remoteVideo');
+        }
+      } else {
+        // Mic audio - assign to remoteAudioEl
+        if (remoteAudioEl && remoteAudioEl.srcObject !== stream) {
+          remoteAudioEl.srcObject = stream;
+          log('Assigned mic stream to remoteAudioEl');
+        }
       }
     }
   };
@@ -217,55 +292,108 @@ function ensurePeerConnection() {
   };
 
   pc.onnegotiationneeded = async () => {
-    try {
-      makingOffer = true;
-      await pc.setLocalDescription();
-      safeSend({ type: 'offer', sdp: pc.localDescription, room: ROOM_NAME });
-    } catch (e) {
-      console.error('onnegotiationneeded error', e);
-    } finally {
-      makingOffer = false;
-    }
+    // onnegotiationneeded НЕ должен создавать offer
+    // Только логируем событие
+    log('onnegotiationneeded fired (skipped automatic offer)');
   };
+}
+
+// Создание offer вручную (ТОЛЬКО если мы polite peer)
+async function createOfferIfNeeded(force = false) {
+  if (!pc) return;
+
+  // 1. Проверяем, есть ли другие участники
+  if (!remoteId) {
+    log('No remoteId (waiting for peers), skipping offer');
+    return;
+  }
+
+  // 2. Проверяем Politeness
+  // Polite = myId < remoteId
+  const isPolite = (myId || '') < (remoteId || '');
+
+  if (!isPolite) {
+    log('I am IMPOLITE, suppressing offer creation. Sending please_offer (via state) to Polite peer.');
+    // Используем type: 'state' c subtype, чтобы пройти через старый сервер, который может не знать type: 'please_offer'
+    safeSend({ type: 'state', subtype: 'please_offer', room: ROOM_NAME });
+    return;
+  }
+
+  // 3. Проверяем наличие треков (опционально, но полезно не слать пустые офферы)
+  const senders = pc.getSenders();
+  const hasLocalTracks = senders.some(s => s.track !== null);
+  if (!hasLocalTracks) {
+    // log('No local tracks, typically skipping, but if polite maybe should offer?');
+    // Для экономии ресурсов скипнем, если треков совсем нет
+    // return; 
+    // В данном ТЗ лучше создать, если Negotiation Needed? 
+    // Но мы вызываем это вручную ПОСЛЕ добавления треков.
+  }
+
+  // 4. Проверяем Stable State
+  // Если мы Polite, мы можем делать offer даже не в stable (через rollback),
+  // но простейшая реализация WebRTC Perfect Negotiation подразумевает,
+  // что мы делаем offer когда 'negotiationneeded' и stable, либо обрабатываем коллизии.
+  // В данном ТЗ: "Offer создаётся строго в одном месте... НО только если polite === true"
+
+  // Если connection не stable, polite peer может подождать или откатить?
+  // Если мы уже makingOffer - выходим
+  if (makingOffer && !force) return;
+
+  try {
+    makingOffer = true;
+    await pc.setLocalDescription();
+    log('I am POLITE, created offer, sending...');
+    safeSend({ type: 'offer', sdp: pc.localDescription, room: ROOM_NAME });
+  } catch (e) {
+    console.error('createOfferIfNeeded error', e);
+  } finally {
+    makingOffer = false;
+  }
 }
 
 async function handleOffer(msg) {
   ensurePeerConnection();
 
-  const offerCollision =
-    makingOffer || (pc.signalingState !== 'stable');
+  // Politeness calculation
+  // Сравниваем myId и senderId
+  const senderId = msg.senderId || remoteId;
+  const isPolite = (myId || '') < (senderId || '');
 
-  // "Polite" peer = тот, у кого ID меньше (лексикографически)
-  const polite = (myId || '') < (msg.senderId || '');
+  const offerCollision = makingOffer || pc.signalingState !== 'stable';
 
-  ignoreOffer = !polite && offerCollision;
+  ignoreOffer = !isPolite && offerCollision;
 
   if (ignoreOffer) {
-    log('Ignoring offer (collision, impolite)');
+    log('Ignoring offer (collision, I am IMPOLITE)');
     return;
   }
 
   if (offerCollision) {
-    // Мы polite, уступаем. Откатываемся, чтобы принять их оффер.
-    log('Collision detected, rolling back (polite)');
+    // Мы Polite и случилась коллизия -> делаем Rollback
+    log('Collision detected, rolling back (I am POLITE)');
     try {
       await Promise.all([
         pc.setLocalDescription({ type: 'rollback' }),
         pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
       ]);
     } catch (e) {
-      console.error('Rollback/SRD error', e);
+      console.error('Rollback error', e);
+      return; // Stop processing on error
     }
   } else {
+    // Нет коллизии - просто принимаем
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
     } catch (e) {
       console.error('setRemoteDescription error', e);
+      return;
     }
   }
 
-  // Отвечаем на offer
+  // Отвечаем Answer-ом
   try {
+    // Проверка state перед созданием answer
     if (pc.signalingState === 'have-remote-offer') {
       await pc.setLocalDescription();
       safeSend({ type: 'answer', sdp: pc.localDescription, room: ROOM_NAME });
@@ -301,9 +429,9 @@ function handleRemoteState(msg) {
     if (remoteVideo) {
       remoteVideo.srcObject = null;
     }
-    // Также можно очистить remoteAudioEl, если нужно
-    // if (remoteAudioEl) remoteAudioEl.srcObject = null;
   }
+  // Входящие сообщения типа "state" не инициируют offer
+  // (требование: "Никакие входящие ... не должны приводить к повторному созданию negotiation")
 }
 
 // ---- медиа ----
@@ -314,6 +442,10 @@ async function startMic() {
         deviceId: micSelect && micSelect.value && micSelect.value !== 'default'
           ? { exact: micSelect.value }
           : undefined,
+        // Улучшения звука: эхоподавление и шумоподавление
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
       },
       video: false,
     };
@@ -329,6 +461,9 @@ async function startMic() {
     for (const track of stream.getAudioTracks()) {
       pc.addTrack(track, stream);
     }
+
+    // Создаём offer после добавления треков
+    await createOfferIfNeeded();
 
     if (btnMicOn) btnMicOn.disabled = true;
     if (btnMicOff) btnMicOff.disabled = false;
@@ -521,21 +656,36 @@ async function captureScreenStream() {
   const selectedSource = await renderSourcePicker(sources);
   if (!selectedSource || !selectedSource.id) return null;
 
-  return await navigator.mediaDevices.getUserMedia({
-    audio: {
-      mandatory: {
-        chromeMediaSource: 'desktop',
-        chromeMediaSourceId: selectedSource.id,
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+          chromeMediaSourceId: selectedSource.id,
+        }
+      },
+      video: {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+          chromeMediaSourceId: selectedSource.id,
+          maxFrameRate: 60,
+        }
       }
-    },
-    video: {
-      mandatory: {
-        chromeMediaSource: 'desktop',
-        chromeMediaSourceId: selectedSource.id,
-        maxFrameRate: 60,
+    });
+  } catch (err) {
+    console.error('Error getting stream with audio, trying video only...', err);
+    // Если не удалось со звуком (например, Window source не поддерживает), пробуем без
+    return await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+          chromeMediaSourceId: selectedSource.id,
+          maxFrameRate: 60,
+        }
       }
-    }
-  });
+    });
+  }
 }
 
 async function startScreen() {
@@ -553,6 +703,9 @@ async function startScreen() {
     for (const track of stream.getTracks()) {
       pc.addTrack(track, stream);
     }
+
+    // Создаём offer после добавления треков
+    await createOfferIfNeeded();
 
     if (btnStartScreen) btnStartScreen.disabled = true;
     if (btnStopScreen) btnStopScreen.disabled = false;
@@ -796,11 +949,13 @@ window.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  await startMic();
-  await populateDevices();
+  // Сначала настраиваем UI
   setupFullscreenButtons();
   setupRemoteVolume();
   setupSelfListen();
+  await populateDevices();
+
+  // Затем подключаемся к signaling (startMic будет вызван в ws.onopen)
   setupWebSocket();
   appendLog(`Конфиг: signaling=${SIGNALING_URL}, room=${ROOM_NAME}`);
 });

@@ -22,7 +22,7 @@ function createWindow() {
         height: initialHeight,
         frame: false,
         titleBarStyle: "hidden",
-        title: "CreamLine v1.0.9",
+        title: "CreamLine v1.1.7",
         icon: "build/icon.ico",
         backgroundColor: "#111",
         webPreferences: {
@@ -34,6 +34,18 @@ function createWindow() {
     });
 
     win.loadFile("index.html");
+
+    // F10 для переключения DevTools
+    win.webContents.on("before-input-event", (event, input) => {
+        if (input.type === "keyDown" && input.key === "F10") {
+            if (win.webContents.isDevToolsOpened()) {
+                win.webContents.closeDevTools();
+            } else {
+                win.webContents.openDevTools();
+            }
+            event.preventDefault();
+        }
+    });
 }
 
 function ensureLocalSignalingServer() {
@@ -158,21 +170,11 @@ function setupAutoUpdater() {
         if (win) win.webContents.send("update-download-progress", percent);
     });
 
-    autoUpdater.on("update-downloaded", async (info) => {
+    autoUpdater.on("update-downloaded", (info) => {
         console.log("Обновление скачано", info?.version);
-
-        const { response } = await dialog.showMessageBox(win, {
-            type: "question",
-            buttons: ["Перезапустить и установить", "Позже"],
-            defaultId: 0,
-            cancelId: 1,
-            title: "Обновление скачано",
-            message: info?.version ? `Установить версию ${info.version} сейчас?` : "Установить обновление сейчас?"
-        });
-
-        if (response === 0) {
-            autoUpdater.quitAndInstall();
-        }
+        // Сразу запускаем установку в тихом режиме
+        // quitAndInstall(isSilent, isForceRunAfter)
+        autoUpdater.quitAndInstall(true, true);
     });
 
     ipcMain.handle("check-for-updates", async () => {

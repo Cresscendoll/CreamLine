@@ -1,9 +1,7 @@
 appId: com.creamline.app
 productName: CreamLine
-artifactName: "${productName}-Setup-${buildVersion}.${ext}"
-buildVersion: "1.0.9"
-extraMetadata:
-  version: "1.0.9"
+# Используем ${version} из package.json, а не ${buildVersion}
+artifactName: "${productName}-Setup-${version}.${ext}"
 extraResources:
   - from: "build"
     to: "build"
@@ -26,9 +24,10 @@ win:
   icon: build/icon.ico
 
 nsis:
-  oneClick: false
+  oneClick: true
   perMachine: false
-  allowToChangeInstallationDirectory: true
+  allowToChangeInstallationDirectory: false
   createStartMenuShortcut: true
   shortcutName: "CreamLine"
   differentialPackage: true
+  runAfterFinish: true
